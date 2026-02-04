@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Tableau de bord Archipel Collège</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <style>
+        :root { --blue: #000091; --border: #000; }
+        * { box-sizing: border-box; }
+        body { font-family: "Segoe UI", Arial, sans-serif; background: #3a3a3a; margin: 0; padding: 0; }
+        
+        .toolbar { 
+            background: #fff; padding: 15px; display: flex; gap: 15px; 
+            justify-content: center; position: sticky; top: 0; z-index: 100;
+            border-bottom: 3px solid var(--blue); box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        .toolbar input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 220px; }
+
+        /* Conteneur principal */
+        #render-area { width: 210mm; margin: 20px auto; background: transparent; }
+
+        /* Chaque "Page" visuelle */
+        .pdf-page {
+            width: 210mm;
+            padding: 15mm;
+            background: white;
+            margin-bottom: 20px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5);
+            /* Suppression des hauteurs fixes et du flexbox qui cassent le rendu */
+            display: block; 
+            position: relative;
+        }
+
+        @media print {
+            body { background: none; }
+            .no-print { display: none; }
+            #render-area { margin: 0; width: 210mm; }
+            .pdf-page { 
+                margin: 0 !important; 
+                box-shadow: none !important;
+                page-break-before: always !important; /* Un seul saut géré ici */
+            }
+            .pdf-page:first-child { page-break-before: avoid !important; }
+        }
+
+        .header { border-bottom: 2px solid var(--blue); padding-bottom: 8px; margin-bottom: 15px; overflow: hidden; }
+        .acad-name { float: left; font-weight: bold; text-transform: uppercase; font-size: 1rem; color: #000; }
+        .etab-info { float: right; text-align: right; font-size: 0.9rem; font-weight: bold; }
+
+        h1 { clear: both; color: var(--blue); font-size: 1.3rem; margin: 10px 0; text-align: center; text-transform: uppercase; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        h2 { background: #f2f2f2; padding: 6px; font-size: 0.90rem; border-left: 6px solid var(--blue); margin: 20px 0 10px 0; color: #000; font-weight: bold; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.75rem; table-layout: fixed; margin-bottom: 10px; }
+        th, td { border: 1px solid var(--border); padding: 6px; vertical-align: middle; }
+        th { background: #f9f9f9; font-weight: bold; text-align: center; }
+        
+        .col-label { width: 40%; text-align: left; font-weight: 500; }
+        .col-year { width: 50px; text-align: center; font-weight: bold; }
+        
+        textarea { 
+            width: 100%; height: 50px; border: 1px solid #eee; 
+            font-family: inherit; font-size: 0.7rem; resize: none; 
+            background: #fffdf5; padding: 4px; display: block;
+        }
+
+        .orientation-table { font-size: 0.68rem; }
+        .orientation-table textarea { height: 35px; }
+		/* ... (gardez le reste identique) */
+
+/* Classe spécifique pour compacter la dernière page si besoin */
+.compact-page {
+    font-size: 0.65rem !important; /* Réduction globale de la police */
+}
+.compact-page table {
+    font-size: 0.62rem !important;
+}
+.compact-page h2 {
+    margin: 10px 0 5px 0 !important; /* Réduction des espaces */
+}
+.compact-page textarea {
+    height: 30px !important;
+}
+
+@media print {
+    .pdf-page {
+        margin: 0 !important;
+        page-break-after: always !important; /* On saute APRÈS */
+    }
+    .pdf-page:last-child {
+        page-break-after: avoid !important; /* SAUF sur la dernière page */
+    }
+}
+    </style>
+</head>
+<body>
+
+<div class="toolbar no-print">
+    <button class="btn btn-up" style="background:var(--blue); color:white; padding:10px; cursor:pointer;" onclick="document.getElementById('upload').click()">1. Charger Fichier Archipel</button>
+    <input type="file" id="upload" accept=".xlsx" style="display:none">
+    <input type="text" id="set-acad" placeholder="Académie ..." oninput="syncText()">
+    <input type="text" id="set-etab" placeholder="Nom de l'Établissement" oninput="syncText()">
+    <button class="btn btn-pdf" style="background:#e1000f; color:white; padding:10px; cursor:pointer;" onclick="savePDF()">2. Exporter en PDF</button>
+</div>
+
+<div id="render-area">
+    <div class="pdf-page"><div style="text-align:center; padding-top:100px; color:#666;">Veuillez charger le fichier .xlsx.</div></div>
+</div>
+
+<script>
+const YEARS = ["2022", "2023", "2024", "2025"];
+const FULL_MAPPING = [
+    {
+        pageTitle: "Repères & Contexte",
+        sections: [
+            {
+                title: "Repères Socio-Territoriaux",
+                rows: [
+                    ['IPS de l’établissement', 'IPS de l\'établissement', 'Ensemble des élèves'],
+                    ['Hétérogénéité sociale des élèves', 'Hétérogénéité sociale des élèves', 'Ensemble des élèves'],
+                    ['PCS : aucune renseignée (%)', '% de PCS renseignées (2nd degré)', 'Niveau collège - aucune PCS renseignée'],
+                    ['PCS : une seule renseignée (%)', '% de PCS renseignées (2nd degré)', 'Niveau collège - une seule PCS renseignée'],
+                    ['PCS : deux renseignées (%)', '% de PCS renseignées (2nd degré)', 'Niveau collège - deux PCS renseignées'],
+                    ['Milieu social - élèves défavorisés (%)', 'Milieu social (collège ou lycée GT)', 'Défavorisé'],
+                    ['Milieu social - élèves moyennement favorisés (%)', 'Milieu social (collège ou lycée GT)', 'Moyen'],
+                    ['Milieu social - élèves favorisés (%)', 'Milieu social (collège ou lycée GT)', 'Favorisé'],
+                    ['Milieu social - élèves très favorisés (%)', 'Milieu social (collège ou lycée GT)', 'Très favorisé'],
+                    ['Élèves résidant en QPV (%)', '% d\'élèves résidant en QPV', 'Niveau collège hors SEGPA']
+                ]
+            }
+        ]
+    },
+    {
+        pageTitle: "Performance Français 6e",
+        sections: [
+            {
+                title: "Évaluations Nationales - Français 6ème",
+                rows: [
+                    ['FR - Score moyen élèves', 'Score moyen des élèves de 6e', 'Score en français'],
+                    ['FR - Score moyen filles', 'Score moyen des élèves de 6e selon sexe', 'Score moyen en français des filles'],
+                    ['FR - Score moyen garçons', 'Score moyen des élèves de 6e selon sexe', 'Score moyen en français des garçons'],
+                    ['FR - Groupe 1 - score < 200 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 1 - score < 200'],
+                    ['FR - Groupe 2 - 200 à 225 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 2 - score entre 200 et 225'],
+                    ['FR - Groupe 3 - 225 à 250 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 3 - score entre 225 et 250'],
+                    ['FR - Groupe 4 - 250 à 275 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 4 - score entre 250 et 275'],
+                    ['FR - Groupe 5 - 275 à 300 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 5 - score entre 275 et 300'],
+                    ['FR - Groupe 6 - score >= 300 (%)', 'Français - 6e - répartition dans les groupes', 'Groupe 6 - score >= 300']
+                ]
+            }
+        ]
+    },
+    {
+        pageTitle: "Performance Mathématiques 6e",
+        sections: [
+            {
+                title: "Évaluations Nationales - Mathématiques 6ème",
+                rows: [
+                    ['MA - Score moyen élèves', 'Score moyen des élèves de 6e', 'Score en mathématiques'],
+                    ['MA - Score moyen filles', 'Score moyen des élèves de 6e selon sexe', 'Score moyen en mathématiques des filles'],
+                    ['MA - Score moyen garçons', 'Score moyen des élèves de 6e selon sexe', 'Score moyen en mathématiques des garçons'],
+                    ['MA - Groupe 1 - score < 200 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 1 - score < 200'],
+                    ['MA - Groupe 2 - 200 à 225 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 2 - score entre 200 et 225'],
+                    ['MA - Groupe 3 - 225 à 250 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 3 - score entre 225 et 250'],
+                    ['MA - Groupe 4 - 250 à 275 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 4 - score entre 250 et 275'],
+                    ['MA - Groupe 5 - 275 à 300 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 5 - score entre 275 et 300'],
+                    ['MA - Groupe 6 - score >= 300 (%)', 'Maths - 6e - répartition dans les groupes', 'Groupe 6 - score >= 300']
+                ]
+            }
+        ]
+    },
+    {
+        pageTitle: "DNB & Orientation",
+        sections: [
+            {
+                title: "Diplôme National du Brevet (DNB Série G)",
+                rows: [
+                    ['DNB - Taux de réussite (%)', '% de réussite au DNB et valeur ajoutée', 'Taux de réussite brut - Série G'],
+                    ['DNB - Valeur ajoutée réussite', '% de réussite au DNB et valeur ajoutée', 'Valeur ajoutée tx de réussite - Série G'],
+                    ['DNB - Note moyenne écrit (/20)', 'Note moyenne à l\'écrit du DNB et valeur ajoutée', 'Note moyenne à l\'écrit - Série G'],
+                    ['DNB - Valeur ajoutée note écrit', 'Note moyenne à l\'écrit du DNB et valeur ajoutée', 'Valeur ajoutée note - Série G']
+                ]
+            },
+            {
+                title: "Orientation et Équité fin de 3ème",
+                isOrientation: true,
+                rows: [
+                    ['Vers 2de GT - Garçons (%)', '% de passage post-3ème selon le sexe', '2nde GT - Educ - Garçons'],
+                    ['Vers 2de GT - Filles (%)', '% de passage post-3ème selon le sexe', '2nde GT - Educ - Filles'],
+                    ['Vers 2de GT - CSP+ (%)', '% de passage post-3ème selon la PCS', '2nde GT - Educ - Cadres sup. et enseignants'],
+                    ['Vers 2de GT - Ouvriers (%)', '% de passage post-3ème selon la PCS', '2nde GT - Educ - Ouvriers et inactifs'],
+                    ['Vers 2de PRO - Garçons (%)', '% de passage post-3ème selon le sexe', '2nde PRO - Educ - Garçons'],
+                    ['Vers 2de PRO - Filles (%)', '% de passage post-3ème selon le sexe', '2nde PRO - Educ - Filles'],
+                    ['Vers CAP - Garçons (%)', '% de passage post-3ème selon le sexe', 'CAP - Educ - Garçons'],
+                    ['Vers CAP - Filles (%)', '% de passage post-3ème selon le sexe', 'CAP - Educ - Filles'],
+                    ['Vers Apprentissage - Garçons (%)', '% de passage post-3ème selon le sexe', 'Apprentissage - Garçons'],
+                    ['Vers Apprentissage - Filles (%)', '% de passage post-3ème selon le sexe', 'Apprentissage - Filles']
+                ]
+            }
+        ]
+    }
+];
+
+document.getElementById('upload').addEventListener('change', function(e) {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+        const wb = XLSX.read(new Uint8Array(evt.target.result), {type: 'array'});
+        buildReport(XLSX.utils.sheet_to_json(wb.Sheets["Données"]), wb.Sheets["Informations"]);
+    };
+    reader.readAsArrayBuffer(e.target.files[0]);
+});
+
+function syncText() {
+    const acad = document.getElementById('set-acad').value || "...";
+    const etab = document.getElementById('set-etab').value || "...";
+    document.querySelectorAll('.ui-acad').forEach(el => el.innerText = acad);
+    document.querySelectorAll('.ui-etab').forEach(el => el.innerText = etab);
+}
+
+function buildReport(data, info) {
+    const uai = info ? XLSX.utils.sheet_to_json(info, {header: 1})[0][1] : "UAI ?";
+    const container = document.getElementById('render-area');
+    container.innerHTML = '';
+
+    FULL_MAPPING.forEach((pageData, index) => {
+        const page = document.createElement('div');
+        // Si c'est la dernière page (index 3), on applique la classe compacte
+        page.className = 'pdf-page' + (index === FULL_MAPPING.length - 1 ? ' compact-page' : '');
+        
+        let content = `
+            <div class="header">
+                <div class="acad-name">ACADÉMIE <span class="ui-acad">...</span></div>
+                <div class="etab-info"><span class="ui-etab">...</span> | UAI : ${uai}</div>
+            </div>
+            <h1>${pageData.pageTitle}</h1>`;
+
+        pageData.sections.forEach(sec => {
+            content += `<h2>${sec.title}</h2>
+            <table class="${sec.isOrientation ? 'orientation-table' : ''}">
+                <thead>
+                    <tr>
+                        <th style="width:35%">Indicateur</th>
+                        ${YEARS.map(y => `<th style="width:50px">${y}</th>`).join('')}
+                        <th>Analyse et leviers</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+            sec.rows.forEach(rowMapping => {
+                const found = data.find(r => r.libelle_indicateur === rowMapping[1] && r.libelle_modalite === rowMapping[2]);
+                content += `<tr>
+                    <td>${rowMapping[0]}</td>
+                    ${YEARS.map(y => `<td style="text-align:center">${(found && found[y]) ? found[y] : '-'}</td>`).join('')}
+                    <td><textarea placeholder="..."></textarea></td>
+                </tr>`;
+            });
+            content += `</tbody></table>`;
+        });
+        page.innerHTML = content;
+        container.appendChild(page);
+    });
+    syncText();
+}
+
+function savePDF() {
+    const element = document.getElementById('render-area');
+    const opt = {
+        margin: 0,
+        filename: 'Rapport_Archipel_Final.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        // On utilise 'avoid-all' car le CSS (page-break-after) gère maintenant le travail proprement
+        pagebreak: { mode: 'avoid-all' }
+    };
+    html2pdf().set(opt).from(element).save();
+}
+</script>
+</body>
+</html>
